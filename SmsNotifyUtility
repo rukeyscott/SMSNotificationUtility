@@ -1,0 +1,123 @@
+/*______                   _____                       __         .__        
+\______ \   _______  __   /     \   ____  __ __  _____/  |______  |__| ____  
+ |    |  \_/ __ \  \/ /  /  \ /  \ /  _ \|  |  \/    \   __\__  \ |  |/    \ 
+ |    `   \  ___/\   /  /    Y    (  <_> )  |  /   |  \  |  / __ \|  |   |  \
+/_______  /\___  >\_/   \____|__  /\____/|____/|___|  /__| (____  /__|___|  /
+        \/     \/               \/                  \/          \/        \/ 
+--------------------------  by Scott Purcell   ------------------------------*/
+global without sharing class SmsNotifyUtility {
+    
+    public static void notifyOppOwner(Id oppId)
+    {
+        List<Opportunity> oppList = [Select Id,Name,Owner_Mobile_Phone__c,SMS_Messages__c,SMS_Email__c,Owner_Mobile_Phone_Carrier__c From Opportunity Where Id =: oppId];
+        notifyOppOwners(oppList);
+    }
+    public static void notifyOppOwners(List<Opportunity> oppList)
+    {
+        system.debug('notifyOppOwners');
+        List<MobilePhoneCarrierSetting__mdt > carrierCodes = [SELECT MasterLabel,SMS_Extension__c  From MobilePhoneCarrierSetting__mdt];
+        List<String> toAddresses = new List<String>();
+        Map<String,MobilePhoneCarrierSetting__mdt> carrierMap = new Map<String,MobilePhoneCarrierSetting__mdt>();
+        Map<String,Id> addressIdMap = new Map<String,String>();
+        Map<String,String> addressMessageMap = new Map<String,String>();
+        
+        for(MobilePhoneCarrierSetting__mdt mdt: carrierCodes)carrierMap.put(mdt.MasterLabel,mdt);
+        for(Opportunity opp:oppList)
+        {
+            system.debug('notifyOppOwners: '+ opp.Owner_Mobile_Phone_Carrier__c);
+            if(carrierMap.containsKey(opp.Owner_Mobile_Phone_Carrier__c))
+            {
+                String phoneNum = opp.Owner_Mobile_Phone__c.remove('(');
+                phoneNum = phoneNum.remove(')');
+                phoneNum = phoneNum.remove(' ');
+                phoneNum = phoneNum.remove('-');
+                String smsEmail = phoneNum + carrierMap.get(opp.Owner_Mobile_Phone_Carrier__c).SMS_Extension__c;
+                system.debug('SMS Email Address: '+smsEmail);
+                opp.SMS_Email__c = smsEmail;
+            }
+        }
+    }
+    webservice static void notifyContact(Id conId)//created as a webservice to use a Javascipt button
+    {
+        List<Contact> conList = [Select Id,Name,Mobile_Carrier__c,SMS_Messages__c,MobilePhone,Send_SMS__C,SMS_Email__c From Contact Where Id =:conId];
+        notifyContacts(conList);
+    }
+    //called from contact trigger
+    public static void notifyContacts(List<Contact> conList)
+    {
+        System.debug('notifyContacts');
+        List<MobilePhoneCarrierSetting__mdt > carrierCodes = [SELECT MasterLabel,SMS_Extension__c  From MobilePhoneCarrierSetting__mdt];
+        List<String> toAddresses = new List<String>();
+        Map<String,MobilePhoneCarrierSetting__mdt> carrierMap = new Map<String,MobilePhoneCarrierSetting__mdt>();
+        for(MobilePhoneCarrierSetting__mdt mdt: carrierCodes)carrierMap.put(mdt.MasterLabel,mdt);
+        Map<String,Id> addressIdMap = new Map<String,String>();
+        Map<String,String> addressMessageMap = new Map<String,String>();
+        
+        for(Contact con:conList)
+        {
+            system.debug('carrierMap.containsKey(con.Mobile_Carrier__c): '+carrierMap.containsKey(con.Mobile_Carrier__c));
+            if(carrierMap.containsKey(con.Mobile_Carrier__c))
+            {
+                String phoneNum = con.MobilePhone.remove('(');
+                phoneNum = phoneNum.remove(')');
+                phoneNum = phoneNum.remove(' ');
+                phoneNum = phoneNum.remove('-');
+                String smsEmail = phoneNum + carrierMap.get(con.Mobile_Carrier__c).SMS_Extension__c;
+                system.debug('SMS Email Address: '+smsEmail);
+                con.SMS_Email__c = smsEmail;
+                addressIdMap.put(smsEmail,con.Id);
+                addressMessageMap.put(smsEmail,con.SMS_Messages__c);
+            }
+        }
+        if(addressIdMap.keyset().size()>0)createEmail(addressIdMap,addressMessageMap);
+    }
+     public static void createEmail(Map<String,Id> addressIdMap,Map<String,String> addressMessageMap)
+     {
+         //all SMS email templates start with 'SMS'
+         String templateKeyword ='SMS%';
+         List<EmailTemplate> ets=[Select Id,Name from EmailTemplate where Name LIKE:templateKeyword];
+         System.debug('templates: '+ets);
+         List<Messaging.SingleEmailMessage> mails = new List<Messaging.SingleEmailMessage>();
+        
+         for(String toAddress:addressIdMap.keyset())
+         {
+             Id templateId = null;
+             for(EmailTemplate et:ets)
+             {
+                 //match the template to the message
+                
+                 system.debug(toAddress+ ' : '+addressMessageMap.values());
+                 if(addressMessageMap.containsKey(toAddress))
+                 {
+                     if(et.Name == addressMessageMap.get(toAddress))
+                     {
+                         templateId = et.Id;
+                         system.debug(' here');
+                    
+                     }
+                 }
+             }
+             List<String>toAddresses = new List<String>();
+             toAddresses.add(toAddress);
+             system.debug('toAddresses: '+toAddresses);
+             Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+             mail.setToAddresses(toAddresses);
+             mail.setTargetObjectId(addressIdMap.get(toAddress));
+             mail.setSenderDisplayName('Need A Car');
+             mail.setUseSignature(false);
+             mail.setBccSender(false);
+             mail.setSaveAsActivity(false);
+             mail.setTemplateId(templateId);
+             //dont send the message if there is no template
+             if(templateId != null)mails.add(mail);
+             system.debug('mails: '+mails);
+         }
+         if(mails.size()>0)
+         {
+             
+             Messaging.SendEmailResult[] results = Messaging.sendEmail( mails );
+             system.debug('MESSAGE SENT: ');
+         }
+        
+     }
+}
